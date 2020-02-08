@@ -13,7 +13,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
 #include "tensorflow/lite/kernels/internal/quantization_util.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
@@ -95,6 +95,7 @@ void EvalSquaredDifference(TfLiteContext* context, TfLiteNode* node,
 
 TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
+  ruy::profiler::ScopeLabel label("SquaredDifference");
 
   const TfLiteTensor* input1 = GetInput(context, node, kInputTensor1);
   const TfLiteTensor* input2 = GetInput(context, node, kInputTensor2);
@@ -105,10 +106,10 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   } else if (output->type == kTfLiteInt32) {
     EvalSquaredDifference<int32_t>(context, node, data, input1, input2, output);
   } else {
-    context->ReportError(context,
-                         "SquaredDifference only supports FLOAT32, INT32 and "
-                         "quantized UINT8 now, got %d.",
-                         output->type);
+    context->ReportError(
+        context,
+        "SquaredDifference only supports FLOAT32 and INT32 now, got %d.",
+        output->type);
     return kTfLiteError;
   }
 

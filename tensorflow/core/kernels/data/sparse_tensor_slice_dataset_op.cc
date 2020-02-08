@@ -41,8 +41,8 @@ class Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return std::unique_ptr<IteratorBase>(
-        new Iterator({this, strings::StrCat(prefix, "::SparseTensorSlice")}));
+    return absl::make_unique<Iterator>(typename Iterator::Params{
+        this, strings::StrCat(prefix, "::SparseTensorSlice")});
   }
 
   const DataTypeVector& output_dtypes() const override { return dtypes_; }
@@ -55,6 +55,8 @@ class Dataset : public DatasetBase {
   }
 
   int64 Cardinality() const override { return sparse_tensor_.shape()[0]; }
+
+  Status CheckExternalState() const override { return Status::OK(); }
 
  protected:
   Status AsGraphDefInternal(SerializationContext* ctx,

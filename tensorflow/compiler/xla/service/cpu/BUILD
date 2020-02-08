@@ -1,10 +1,17 @@
 # Description:
 #    LLVM-based CPU backend for XLA.
 
-licenses(["notice"])  # Apache 2.0
+load("//tensorflow/compiler/xla:xla.bzl", "ORC_JIT_MEMORY_MAPPER_TARGETS")
+load(
+    "//third_party/mkl:build_defs.bzl",
+    "mkl_deps",
+)
+load("//tensorflow:tensorflow.bzl", "tf_cc_binary", "tf_cc_test", "tf_openmp_copts")
+load(":build_defs.bzl", "runtime_copts")
 
 package(
     default_visibility = [":friends"],
+    licenses = ["notice"],  # Apache 2.0
 )
 
 package_group(
@@ -12,15 +19,6 @@ package_group(
     includes = [
         "//tensorflow/compiler/xla:friends",
     ],
-)
-
-load(":build_defs.bzl", "runtime_copts")
-load("//tensorflow:tensorflow.bzl", "tf_cc_test")
-load("//tensorflow:tensorflow.bzl", "tf_cc_binary")
-load("//tensorflow/compiler/xla:xla.bzl", "ORC_JIT_MEMORY_MAPPER_TARGETS")
-load(
-    "//third_party/mkl:build_defs.bzl",
-    "mkl_deps",
 )
 
 # Filegroup used to collect source files for dependency checking.
@@ -37,6 +35,7 @@ cc_library(
     srcs = ["cpu_transfer_manager.cc"],
     hdrs = ["cpu_transfer_manager.h"],
     deps = [
+        ":cpu_runtime",
         "//tensorflow/compiler/xla:literal",
         "//tensorflow/compiler/xla:literal_util",
         "//tensorflow/compiler/xla:shape_util",
@@ -44,10 +43,9 @@ cc_library(
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:generic_transfer_manager",
         "//tensorflow/compiler/xla/service:transfer_manager",
-        "//tensorflow/compiler/xla/service/cpu:cpu_runtime",
         "//tensorflow/core:lib",
         "//tensorflow/core:stream_executor_no_cuda",
         "//tensorflow/stream_executor",
@@ -63,7 +61,7 @@ cc_library(
     srcs = ["buffer_info_util.cc"],
     hdrs = ["buffer_info_util.h"],
     deps = [
-        "//tensorflow/compiler/tf2xla:cpu_function_runtime",
+        "//tensorflow/compiler/xla:cpu_function_runtime",
         "//tensorflow/compiler/xla/service:buffer_assignment",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/types:span",
@@ -78,13 +76,10 @@ cc_library(
         ":compiler_functor",
         ":buffer_info_util",
         ":conv_canonicalization",
-        ":cpu_copy_insertion",
         ":cpu_executable",
-        ":cpu_hlo_support_checker",
         ":cpu_instruction_fusion",
         ":cpu_layout_assignment",
         ":cpu_options",
-        ":disassembler",
         ":dot_op_emitter",
         ":ir_emission_utils",
         ":ir_emitter",
@@ -93,27 +88,37 @@ cc_library(
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
         ":target_machine_features",
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/types:span",
-        "//tensorflow/compiler/tf2xla:cpu_function_runtime",
+        "//tensorflow/compiler/xla/service:copy_insertion",
+        "//tensorflow/compiler/xla/service:hlo_casting_utils",
+        "//tensorflow/compiler/xla/service:dump",
         "//tensorflow/compiler/xla/service:map_inliner",
+        "//tensorflow/compiler/xla/service:rng_bit_generator_expander",
+        "//tensorflow/compiler/xla/service:tree_reduction_rewriter",
         "//tensorflow/compiler/xla/service:hlo_get_dimension_size_rewriter",
+        "//tensorflow/compiler/xla/service:conditional_to_select",
+        "//tensorflow/compiler/xla/service:slow_operation_alarm",
         "//tensorflow/compiler/xla/service:scatter_expander",
+        "//tensorflow/compiler/xla/service:slice_sinker",
+        "//tensorflow/compiler/xla:cpu_function_runtime",
         "//tensorflow/compiler/xla:literal",
         "//tensorflow/compiler/xla:protobuf_util",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:algebraic_simplifier",
         "//tensorflow/compiler/xla/service:batch_dot_simplification",
         "//tensorflow/compiler/xla/service:batchnorm_expander",
         "//tensorflow/compiler/xla/service:buffer_assignment",
-        "//tensorflow/compiler/xla/service:buffer_liveness",
         "//tensorflow/compiler/xla/service:call_inliner",
+        "//tensorflow/compiler/xla/service:cholesky_expander",
         "//tensorflow/compiler/xla/service:conditional_simplifier",
         "//tensorflow/compiler/xla/service:convolution_group_converter",
         "//tensorflow/compiler/xla/service:dot_decomposer",
+        "//tensorflow/compiler/xla/service:dynamic_index_splitter",
         "//tensorflow/compiler/xla/service:executable",
         "//tensorflow/compiler/xla/service:flatten_call_graph",
         "//tensorflow/compiler/xla/service:hlo",
@@ -124,39 +129,35 @@ cc_library(
         "//tensorflow/compiler/xla/service:hlo_ordering",
         "//tensorflow/compiler/xla/service:hlo_pass",
         "//tensorflow/compiler/xla/service:hlo_pass_pipeline",
-        "//tensorflow/compiler/xla/service:hlo_proto",
+        "//tensorflow/compiler/xla/service:hlo_proto_cc",
         "//tensorflow/compiler/xla/service:hlo_proto_util",
         "//tensorflow/compiler/xla/service:hlo_memory_scheduler",
         "//tensorflow/compiler/xla/service:hlo_subcomputation_unification",
         "//tensorflow/compiler/xla/service:hlo_verifier",
         "//tensorflow/compiler/xla/service:indexed_array_analysis",
         "//tensorflow/compiler/xla/service:llvm_compiler",
-        "//tensorflow/compiler/xla/service:reduce_precision_insertion",
         "//tensorflow/compiler/xla/service:reshape_mover",
+        "//tensorflow/compiler/xla/service:rng_expander",
+        "//tensorflow/compiler/xla/service:sort_simplifier",
         "//tensorflow/compiler/xla/service:transpose_folding",
+        "//tensorflow/compiler/xla/service:triangular_solve_expander",
         "//tensorflow/compiler/xla/service:tuple_simplifier",
         "//tensorflow/compiler/xla/service:while_loop_constant_sinking",
         "//tensorflow/compiler/xla/service:while_loop_invariant_code_motion",
         "//tensorflow/compiler/xla/service:while_loop_simplifier",
         "//tensorflow/compiler/xla/service:zero_sized_hlo_elimination",
-        "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",  # fixdeps: keep
-        "//tensorflow/core:lib",  # fixdeps: keep
+        "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
+        "//tensorflow/core:lib",
         "//tensorflow/core:stream_executor_no_cuda",
-        "@llvm//:aarch64_code_gen",  # fixdeps: keep
-        "@llvm//:aarch64_disassembler",  # fixdeps: keep
-        "@llvm//:arm_code_gen",  # fixdeps: keep
-        "@llvm//:arm_disassembler",  # fixdeps: keep
-        "@llvm//:core",
-        "@llvm//:mc",  # fixdeps: keep
-        "@llvm//:object",
-        "@llvm//:support",
-        "@llvm//:target",  # fixdeps: keep
-        "@llvm//:x86_code_gen",  # fixdeps: keep
-        "@llvm//:x86_disassembler",  # fixdeps: keep
+        "@llvm-project//llvm:core",
+        "@llvm-project//llvm:mc",
+        "@llvm-project//llvm:object",
+        "@llvm-project//llvm:support",
+        "@llvm-project//llvm:target",
+        "@llvm-project//llvm:x86_code_gen",  # fixdeps: keep
     ] + select({
         "//tensorflow:linux_ppc64le": [
-            "@llvm//:powerpc_disassembler",
-            "@llvm//:powerpc_code_gen",
+            "@llvm-project//llvm:powerpc_code_gen",  # fixdeps: keep
         ],
         "//conditions:default": [
         ],
@@ -175,8 +176,6 @@ cc_library(
     deps = [
         ":compiler_functor",
         ":cpu_runtime",
-        ":custom_call_target_registry",
-        ":disassembler",
         ":orc_jit_memory_mapper",
         ":runtime_fp16",
         ":runtime_conv2d",
@@ -190,17 +189,24 @@ cc_library(
         ":runtime_single_threaded_fft",
         ":runtime_single_threaded_matmul",
         "@com_google_absl//absl/memory",
-        "@llvm//:execution_engine",
-        "@llvm//:core",
-        "@llvm//:mc",  # fixdeps: keep
-        "@llvm//:orc_jit",
-        "@llvm//:support",
-        "@llvm//:target",  # fixdeps: keep
+        "@llvm-project//llvm:execution_engine",
+        "@llvm-project//llvm:core",
+        "@llvm-project//llvm:mc",  # fixdeps: keep
+        "@llvm-project//llvm:orc_jit",
+        "@llvm-project//llvm:support",
+        "@llvm-project//llvm:target",  # fixdeps: keep
+        "//tensorflow/compiler/xla/service:custom_call_target_registry",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
     ] + ORC_JIT_MEMORY_MAPPER_TARGETS,
+)
+
+cc_library(
+    name = "runtime_lightweight_check",
+    hdrs = ["runtime_lightweight_check.h"],
+    copts = runtime_copts(),
 )
 
 cc_library(
@@ -229,22 +235,30 @@ cc_library(
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:buffer_assignment",
         "//tensorflow/compiler/xla/service:computation_layout",
-        "//tensorflow/compiler/xla/service:device_memory_allocator",
         "//tensorflow/compiler/xla/service:executable",
         "//tensorflow/compiler/xla/service:hlo",
+        "//tensorflow/compiler/xla/service:hlo_dataflow_analysis",
         "//tensorflow/compiler/xla/service:hlo_execution_profile",
         "//tensorflow/compiler/xla/service:logical_buffer",
+        "//tensorflow/compiler/xla/service:maybe_owning_device_memory",
         "//tensorflow/compiler/xla/service:shaped_buffer",
-        "//tensorflow/compiler/xla/service:tuple_points_to_analysis",
         "//tensorflow/core:lib",
         "//tensorflow/core:stream_executor_no_cuda",
+        "//tensorflow/core/platform:logging",
+        "//tensorflow/core/platform:macros",
+        "//tensorflow/core/platform:mutex",
+        "//tensorflow/core/platform:platform_port",
+        "//tensorflow/core/platform:types",
+        "//tensorflow/core/profiler/lib:traceme",
+        "//tensorflow/stream_executor:device_memory_allocator",
+        "//tensorflow/stream_executor/host:host_stream",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@llvm//:orc_jit",
+        "@llvm-project//llvm:orc_jit",
     ],
 )
 
@@ -274,8 +288,9 @@ cc_library(
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla:window_util",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:buffer_assignment",
+        "//tensorflow/compiler/xla/service:collective_ops_utils",
         "//tensorflow/compiler/xla/service:elemental_ir_emitter",
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:hlo_casting_utils",
@@ -292,15 +307,19 @@ cc_library(
         "//tensorflow/compiler/xla/service/llvm_ir:loop_emitter",
         "//tensorflow/compiler/xla/service/llvm_ir:tuple_ops",
         "//tensorflow/core:lib",
+        "//tensorflow/core/lib/math:math_util",
+        "//tensorflow/core/platform:logging",
+        "//tensorflow/core/platform:macros",
+        "//tensorflow/core/platform:types",
         "@com_google_absl//absl/container:flat_hash_map",
         "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/types:span",
-        "@llvm//:code_gen",
-        "@llvm//:core",
-        "@llvm//:support",
-        "@llvm//:target",
+        "@llvm-project//llvm:code_gen",
+        "@llvm-project//llvm:core",
+        "@llvm-project//llvm:support",
+        "@llvm-project//llvm:target",
     ],
 )
 
@@ -314,8 +333,8 @@ cc_library(
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/container:flat_hash_map",
-        "@llvm//:analysis",
-        "@llvm//:target",
+        "@llvm-project//llvm:analysis",
+        "@llvm-project//llvm:target",
     ],
 )
 
@@ -333,18 +352,18 @@ cc_library(
     srcs = ["ir_function.cc"],
     hdrs = ["ir_function.h"],
     deps = [
+        ":cpu_runtime",
         ":ir_emission_utils",
         ":shape_partition",
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
-        "//tensorflow/compiler/xla/service/cpu:cpu_runtime",
+        "//tensorflow/compiler/xla/service:hlo_module_config",
         "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
-        "//tensorflow/core:lib",
         "@com_google_absl//absl/strings",
         "@com_google_absl//absl/types:span",
-        "@llvm//:core",
+        "@llvm-project//llvm:core",
     ],
 )
 
@@ -360,26 +379,46 @@ cc_library(
         "//tensorflow/compiler/xla/service/llvm_ir:loop_emitter",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/strings:str_format",
-        "@llvm//:core",
+        "@llvm-project//llvm:core",
+    ],
+)
+
+cc_library(
+    name = "tiled_dot_emitter",
+    srcs = ["tiled_dot_emitter.cc"],
+    hdrs = ["tiled_dot_emitter.h"],
+    deps = [
+        ":vector_support_library",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla/service:hlo",
+        "//tensorflow/compiler/xla/service:hlo_module_config",
+        "//tensorflow/compiler/xla/service/llvm_ir:kernel_support_library",
+        "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
+        "//tensorflow/core:lib",
+        "@llvm-project//llvm:core",
     ],
 )
 
 cc_library(
     name = "dot_op_emitter",
     srcs = ["dot_op_emitter.cc"],
-    hdrs = ["dot_op_emitter.h"],
+    hdrs = [
+        "dot_op_emitter.h",
+    ],
     deps = [
         ":cpu_options",
         ":cpu_runtime",
         ":ir_emission_utils",
         ":target_machine_features",
+        ":tiled_dot_emitter",
         ":vector_support_library",
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:hlo",
+        "//tensorflow/compiler/xla/service:hlo_casting_utils",
         "//tensorflow/compiler/xla/service:hlo_module_config",
         "//tensorflow/compiler/xla/service/llvm_ir:ir_array",
         "//tensorflow/compiler/xla/service/llvm_ir:kernel_support_library",
@@ -387,7 +426,7 @@ cc_library(
         "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/strings",
-        "@llvm//:core",
+        "@llvm-project//llvm:core",
     ],
 )
 
@@ -399,7 +438,7 @@ tf_cc_binary(
         "//tensorflow/compiler/xla:literal",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/client",
         "//tensorflow/compiler/xla/client:client_library",
         "//tensorflow/compiler/xla/client:global_data",
@@ -412,32 +451,11 @@ tf_cc_binary(
 )
 
 cc_library(
-    name = "disassembler",
-    srcs = ["disassembler.cc"],
-    hdrs = ["disassembler.h"],
-    deps = [
-        "//tensorflow/compiler/xla:status_macros",
-        "//tensorflow/compiler/xla:statusor",
-        "//tensorflow/compiler/xla:types",
-        "//tensorflow/compiler/xla:util",
-        "//tensorflow/core:lib",
-        "@com_google_absl//absl/strings:str_format",
-        "@llvm//:mc",
-        "@llvm//:mc_disassembler",
-        "@llvm//:object",
-        "@llvm//:support",
-        "@llvm//:target",
-        "@llvm//:x86_disassembler",  # fixdeps: keep
-    ],
-)
-
-cc_library(
     name = "compiler_functor",
     srcs = ["compiler_functor.cc"],
     hdrs = ["compiler_functor.h"],
     deps = [
         ":cpu_runtime",
-        ":disassembler",
         ":llvm_ir_runtime",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
@@ -446,13 +464,13 @@ cc_library(
         "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/memory",
-        "@llvm//:analysis",
-        "@llvm//:core",
-        "@llvm//:ipo",
-        "@llvm//:mc",
-        "@llvm//:object",
-        "@llvm//:support",
-        "@llvm//:target",
+        "@llvm-project//llvm:analysis",
+        "@llvm-project//llvm:core",
+        "@llvm-project//llvm:ipo",
+        "@llvm-project//llvm:mc",
+        "@llvm-project//llvm:object",
+        "@llvm-project//llvm:support",
+        "@llvm-project//llvm:target",
     ],
 )
 
@@ -469,14 +487,29 @@ cc_library(
     copts = runtime_copts(),
     deps = [
         "//tensorflow/compiler/xla:executable_run_options",
+        "//tensorflow/compiler/xla:refcounting_hash_map",
         "//tensorflow/compiler/xla:shape_util",
+        "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
+        "//tensorflow/compiler/xla/service:collective_ops_utils",
+        "//tensorflow/compiler/xla/service:computation_placer",
+        "//tensorflow/compiler/xla/service:hlo",
+        "//tensorflow/compiler/xla/service:hlo_parser",
         "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
-        "//tensorflow/core:lib",
+        "//tensorflow/core/platform:dynamic_annotations",
+        "//tensorflow/core/platform:logging",
+        "//tensorflow/core/platform:macros",
+        "//tensorflow/core/platform:mutex",
+        "//tensorflow/core/platform:platform_port",
+        "//tensorflow/core/platform:status",
+        "//tensorflow/core/platform:types",
+        "//tensorflow/core/profiler/lib:traceme",
         "//tensorflow/stream_executor",
         "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
         "@com_google_absl//absl/synchronization",
         "@com_google_absl//absl/types:span",
     ],
@@ -495,8 +528,8 @@ cc_library(
         "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
         "//tensorflow/compiler/xla/service/llvm_ir:math_ops",
         "//tensorflow/core:lib",
-        "@llvm//:core",
-        "@llvm//:transform_utils",
+        "@llvm-project//llvm:core",
+        "@llvm-project//llvm:transform_utils",
     ],
 )
 
@@ -510,6 +543,7 @@ cc_library(
     copts = runtime_copts(),
     visibility = ["//visibility:public"],
     deps = [
+        ":runtime_lightweight_check",
         "//tensorflow/compiler/xla:executable_run_options",
         "//tensorflow/core:framework_lite",
         "//tensorflow/core/kernels:eigen_helpers",
@@ -523,7 +557,7 @@ cc_library(
         "runtime_conv2d_mkl.cc",
     ],
     hdrs = ["runtime_conv2d_mkl.h"],
-    copts = runtime_copts(),
+    copts = runtime_copts() + tf_openmp_copts(),
     visibility = ["//visibility:public"],
     deps = [
         ":runtime_conv2d",
@@ -545,18 +579,9 @@ cc_library(
     copts = runtime_copts(),
     visibility = ["//visibility:public"],
     deps = [
+        ":runtime_lightweight_check",
         "//tensorflow/compiler/xla:executable_run_options",
-        "//tensorflow/compiler/xla:xla_data_proto",
-        "//tensorflow/core:framework_lite",
-        "//third_party/eigen3",
-    ],
-)
-
-cc_library(
-    name = "runtime_matvec",
-    hdrs = ["runtime_matvec.h"],
-    copts = runtime_copts(),
-    deps = [
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/core:framework_lite",
         "//third_party/eigen3",
     ],
@@ -569,7 +594,7 @@ cc_library(
     copts = runtime_copts(),
     visibility = ["//visibility:public"],
     deps = [
-        ":runtime_matvec",
+        ":runtime_lightweight_check",
         "//tensorflow/compiler/xla:executable_run_options",
         "//tensorflow/core:framework_lite",
         "//tensorflow/core/kernels:eigen_contraction_kernel",
@@ -600,6 +625,7 @@ cc_library(
     copts = runtime_copts(),
     visibility = ["//visibility:public"],
     deps = [
+        ":runtime_lightweight_check",
         "//tensorflow/core:framework_lite",
         "//tensorflow/core/kernels:eigen_helpers",
         "//third_party/eigen3",
@@ -616,7 +642,7 @@ cc_library(
     copts = runtime_copts(),
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/core:framework_lite",
         "//third_party/eigen3",
     ],
@@ -629,8 +655,8 @@ cc_library(
     copts = runtime_copts(),
     visibility = ["//visibility:public"],
     deps = [
-        ":runtime_matvec",
         "//tensorflow/core:framework_lite",
+        "//tensorflow/core/kernels:eigen_contraction_kernel",
         "//third_party/eigen3",
     ],
 )
@@ -690,8 +716,8 @@ tf_cc_test(
     srcs = ["cpu_instruction_fusion_test.cc"],
     deps = [
         ":cpu_instruction_fusion",
+        "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla/service:hlo_matchers",
-        "//tensorflow/compiler/xla/service:hlo_parser",
         "//tensorflow/compiler/xla/service:transpose_folding",
         "//tensorflow/compiler/xla/tests:hlo_test_base",
         "//tensorflow/compiler/xla/tests:test_utils",
@@ -721,8 +747,11 @@ cc_library(
     hdrs = ["cpu_instruction_fusion.h"],
     deps = [
         ":ir_emission_utils",
+        "//tensorflow/compiler/xla/service:fusion_node_indexing_evaluation",
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:instruction_fusion",
+        "//tensorflow/compiler/xla/service/llvm_ir:fused_ir_emitter",
+        "@com_google_absl//absl/container:flat_hash_map",
     ],
 )
 
@@ -736,7 +765,7 @@ cc_library(
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:window_util",
         "//tensorflow/compiler/xla/service:hlo",
-        "@llvm//:core",
+        "@llvm-project//llvm:core",
     ],
 )
 
@@ -751,7 +780,6 @@ tf_cc_test(
         "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:hlo_matchers",
-        "//tensorflow/compiler/xla/service:hlo_parser",
         "//tensorflow/compiler/xla/tests:hlo_test_base",
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
     ],
@@ -767,8 +795,6 @@ cc_library(
         ":target_machine_features",
         "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla/service:computation_layout",
-        "//tensorflow/compiler/xla/service:hlo",
-        "//tensorflow/compiler/xla/service:hlo_casting_utils",
         "//tensorflow/compiler/xla/service:layout_assignment",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/container:flat_hash_map",
@@ -788,13 +814,14 @@ tf_cc_test(
         "//tensorflow/compiler/xla:test",
         "//tensorflow/compiler/xla:test_helpers",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:algebraic_simplifier",
         "//tensorflow/compiler/xla/service:computation_layout",
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:hlo_matchers",
         "//tensorflow/compiler/xla/tests:hlo_test_base",
         "//tensorflow/compiler/xla/tests:test_utils",
+        "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/types:span",
     ],
@@ -810,7 +837,7 @@ cc_library(
         ":target_machine_features",
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:hlo_pass",
         "//tensorflow/core:lib",
@@ -865,6 +892,7 @@ cc_library(
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:hlo_cost_analysis",
         "//tensorflow/compiler/xla/service:hlo_pass",
+        "//tensorflow/compiler/xla/service/llvm_ir:dynamic_update_slice_util",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
     ],
@@ -883,13 +911,14 @@ tf_cc_test(
         "//tensorflow/compiler/xla:test",
         "//tensorflow/compiler/xla:test_helpers",
         "//tensorflow/compiler/xla:util",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service:algebraic_simplifier",
         "//tensorflow/compiler/xla/service:computation_layout",
         "//tensorflow/compiler/xla/service:hlo",
         "//tensorflow/compiler/xla/service:hlo_matchers",
         "//tensorflow/compiler/xla/tests:hlo_test_base",
         "//tensorflow/compiler/xla/tests:test_utils",
+        "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/core:lib",
         "//tensorflow/core:test",
     ],
@@ -907,35 +936,12 @@ cc_library(
 )
 
 cc_library(
-    name = "custom_call_target_registry",
-    srcs = [
-        "custom_call_target_registry.cc",
-    ],
-    hdrs = [
-        "custom_call_target_registry.h",
-    ],
-    visibility = ["//visibility:public"],
-)
-
-cc_library(
     name = "orc_jit_memory_mapper",
     srcs = ["orc_jit_memory_mapper.cc"],
     hdrs = ["orc_jit_memory_mapper.h"],
     deps = [
         "//tensorflow/core:lib",
-        "@llvm//:execution_engine",
-    ],
-)
-
-cc_library(
-    name = "cpu_copy_insertion",
-    srcs = ["cpu_copy_insertion.cc"],
-    hdrs = ["cpu_copy_insertion.h"],
-    deps = [
-        "//tensorflow/compiler/xla/service:copy_insertion",
-        "//tensorflow/compiler/xla/service:hlo",
-        "//tensorflow/compiler/xla/service:hlo_pass",
-        "//tensorflow/core:lib",
+        "@llvm-project//llvm:execution_engine",
     ],
 )
 
@@ -947,59 +953,13 @@ cc_library(
         ":target_machine_features",
         "//tensorflow/compiler/xla:shape_util",
         "//tensorflow/compiler/xla:types",
-        "//tensorflow/compiler/xla:xla_data_proto",
+        "//tensorflow/compiler/xla:xla_data_proto_cc",
         "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
         "//tensorflow/core:lib",
         "@com_google_absl//absl/algorithm:container",
         "@com_google_absl//absl/types:span",
-        "@llvm//:core",
-        "@llvm//:support",
-    ],
-)
-
-tf_cc_test(
-    name = "cpu_copy_insertion_test",
-    srcs = ["cpu_copy_insertion_test.cc"],
-    deps = [
-        ":cpu_copy_insertion",
-        "//tensorflow/compiler/xla:debug_options_flags",
-        "//tensorflow/compiler/xla:literal",
-        "//tensorflow/compiler/xla:shape_util",
-        "//tensorflow/compiler/xla:test",
-        "//tensorflow/compiler/xla:test_helpers",
-        "//tensorflow/compiler/xla:xla_data_proto",
-        "//tensorflow/compiler/xla/service:hlo",
-        "//tensorflow/compiler/xla/service:hlo_graph_dumper",
-        "//tensorflow/compiler/xla/service:hlo_matchers",
-        "//tensorflow/compiler/xla/tests:hlo_test_base",
-        "//tensorflow/compiler/xla/tests:xla_internal_test_main",
-        "//tensorflow/core:test",
-    ],
-)
-
-cc_library(
-    name = "cpu_hlo_support_checker",
-    srcs = ["cpu_hlo_support_checker.cc"],
-    hdrs = ["cpu_hlo_support_checker.h"],
-    deps = [
-        "//tensorflow/compiler/xla:shape_util",
-        "//tensorflow/compiler/xla:xla_data_proto",
-        "//tensorflow/compiler/xla/service:hlo_pass",
-        "//tensorflow/core:lib",
-    ],
-)
-
-tf_cc_test(
-    name = "cpu_hlo_support_checker_test",
-    srcs = ["cpu_hlo_support_checker_test.cc"],
-    deps = [
-        ":cpu_hlo_support_checker",
-        "//tensorflow/compiler/xla:shape_util",
-        "//tensorflow/compiler/xla:test",
-        "//tensorflow/compiler/xla/tests:hlo_test_base",
-        "//tensorflow/compiler/xla/tests:xla_internal_test_main",
-        "//tensorflow/core:protos_all_cc",
-        "//tensorflow/core:test",
+        "@llvm-project//llvm:core",
+        "@llvm-project//llvm:support",
     ],
 )
 
@@ -1008,11 +968,26 @@ tf_cc_test(
     size = "small",
     srcs = ["cpu_eigen_tensor_alignment_test.cc"],
     deps = [
-        ":dot_op_emitter",
         ":ir_emission_utils",
         ":target_machine_features_fake",
         "//tensorflow/compiler/xla:test",
-        "//tensorflow/compiler/xla/service:hlo_parser",
+        "//tensorflow/compiler/xla/tests:hlo_test_base",
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
+    ],
+)
+
+tf_cc_test(
+    name = "vectorized_reduce_with_no_vector_registers_test",
+    size = "small",
+    srcs = ["vectorized_reduce_with_no_vector_registers_test.cc"],
+    deps = [
+        ":cpu_compiler",
+        ":cpu_transfer_manager",
+        "//tensorflow/compiler/xla:test",
+        "//tensorflow/compiler/xla/tests:hlo_test_base",
+        "//tensorflow/compiler/xla/tests:xla_internal_test_main",
+        "@llvm-project//llvm:core",
+        "@llvm-project//llvm:support",
+        "@llvm-project//llvm:target",
     ],
 )

@@ -21,6 +21,7 @@ limitations under the License.
 #include <string>
 
 #include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/core/lib/core/stringpiece.h"
 #include "tensorflow/core/lib/io/zlib_compression_options.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/file_system.h"
@@ -64,6 +65,10 @@ class ZlibOutputBuffer : public WritableFile {
   // To immediately write contents to file call `Flush()`.
   Status Append(StringPiece data) override;
 
+#if defined(PLATFORM_GOOGLE)
+  Status Append(const absl::Cord& cord) override;
+#endif
+
   // Deflates any cached input and writes all output to file.
   Status Flush() override;
 
@@ -76,6 +81,9 @@ class ZlibOutputBuffer : public WritableFile {
   // After calling this, any further calls to `Write()`, `Flush()` or `Close()`
   // will fail.
   Status Close() override;
+
+  // Returns the name of the underlying file.
+  Status Name(StringPiece* result) const override;
 
   // Deflates any cached input, writes all output to file and syncs it.
   Status Sync() override;
@@ -128,7 +136,7 @@ class ZlibOutputBuffer : public WritableFile {
   //
   // Note: This method does not flush contents to file.
   // Returns non-ok status if writing contents to file fails.
-  Status DeflateBuffered(bool last = false);
+  Status DeflateBuffered(int flush_mode);
 
   // Appends contents of `z_stream_output_` to `file_`.
   // Returns non-OK status if writing to file fails.

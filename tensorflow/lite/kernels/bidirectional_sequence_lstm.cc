@@ -13,16 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cassert>
-#include <cmath>
-#include <cstdio>
-#include <cstdlib>
-#include <iostream>
-#include <limits>
+#include <cstddef>
 
 #include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
-#include "tensorflow/lite/kernels/activation_functor.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/cpu_backend_context.h"
 #include "tensorflow/lite/kernels/internal/kernel_utils.h"
 #include "tensorflow/lite/kernels/internal/tensor_utils.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
@@ -33,6 +28,8 @@ namespace tflite {
 namespace ops {
 namespace builtin {
 namespace bidirectional_sequence_lstm {
+
+// LINT.IfChange
 
 // Input Tensors of size {max_time, n_batch, n_input}
 constexpr int kInputTensor = 0;
@@ -105,7 +102,10 @@ constexpr int kBwInputActivationStateTensor = 37;
 // Cell state tensors of size {n_batch, n_cell}
 constexpr int kBwInputCellStateTensor = 38;
 
-// Auxiliary input and weights when stacking.
+// Used as auxiliary input and weights when stacking for
+// tf.contrib.rnn.stack_bidirectional_rnn case (with cross links); Used as input
+// to the backward cell when stacking for tf.nn.static_bidirectional_rnn case
+// (without cross links).
 constexpr int kAuxInputTensor = 39;  // Optional
 // Forward weights.
 constexpr int kFwAuxInputToInputWeightsTensor = 40;   // Optional
@@ -122,6 +122,8 @@ constexpr int kBwAuxInputToOutputWeightsTensor = 47;  // Optional
 constexpr int kFwOutputTensor = 0;
 constexpr int kBwOutputTensor = 1;  // Ignored if merge_outputs is set.
 
+// LINT.ThenChange(//tensorflow/lite/tools/optimize/quantize_weights.cc)
+
 // Temporary tensors.
 enum TemporaryTensor {
   // Scratch buffers for input, forget, etc. gates
@@ -136,8 +138,9 @@ enum TemporaryTensor {
   kScalingFactors = 7,
   kProductScalingFactors = 8,
   kRecoveredCellWeights = 9,
-  kAuxInputQuantized = 10,  // Optional, quantized tensor for auxiliary input.
-  kNumTemporaryTensors = 11
+  kAccumScratchBuffer = 10,
+  kAuxInputQuantized = 11,  // Optional, quantized tensor for auxiliary input.
+  kNumTemporaryTensors
 };
 
 void* Init(TfLiteContext* context, const char* buffer, size_t length) {
@@ -178,6 +181,7 @@ TfLiteStatus CheckLstmTensorDimensionsAndTypes(
   TF_LITE_ENSURE_EQ(context, input_to_forget_weights->dims->data[0], n_cell);
   TF_LITE_ENSURE_EQ(context, input_to_forget_weights->dims->data[1], n_input);
   TF_LITE_ENSURE(context, (input_to_forget_weights->type == kTfLiteFloat32) ||
+                              (input_to_forget_weights->type == kTfLiteInt8) ||
                               (input_to_forget_weights->type == kTfLiteUInt8));
 
   const TfLiteTensor* input_to_input_weights =
@@ -459,8 +463,8 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   const TfLiteTensor* bw_aux_input_to_output_weights =
       GetOptionalInputTensor(context, node, kBwAuxInputToOutputWeightsTensor);
 
-  const bool aux_inputs_all_or_none =
-      ((aux_input != nullptr) && (fw_aux_input_to_cell_weights != nullptr) &&
+  const bool aux_inputs_weights_all_or_none =
+      ((fw_aux_input_to_cell_weights != nullptr) &&
        (fw_aux_input_to_forget_weights != nullptr) &&
        (fw_aux_input_to_output_weights != nullptr) &&
        (bw_aux_input_to_cell_weights != nullptr) &&
@@ -472,8 +476,9 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
        (bw_aux_input_to_cell_weights == nullptr) &&
        (bw_aux_input_to_forget_weights == nullptr) &&
        (bw_aux_input_to_output_weights == nullptr));
-  TF_LITE_ENSURE(context, aux_inputs_all_or_none);
-  const bool has_aux_input = (aux_input != nullptr);
+  TF_LITE_ENSURE(context, aux_inputs_weights_all_or_none);
+
+  const bool has_aux_input = (fw_aux_input_to_forget_weights != nullptr);
 
   if (has_aux_input) {
     // Check that aux_input has the same dimensions (except last) as the input.
@@ -485,8 +490,10 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TfLiteTensor* fw_output = GetOutput(context, node, kFwOutputTensor);
   TfLiteTensor* fw_activation_state =
       GetVariableInput(context, node, kFwInputActivationStateTensor);
+  TF_LITE_ENSURE(context, fw_activation_state != nullptr);
   TfLiteTensor* fw_cell_state =
       GetVariableInput(context, node, kFwInputCellStateTensor);
+  TF_LITE_ENSURE(context, fw_cell_state != nullptr);
 
   // Check the shape of input state tensors.
   // These tensor may be 1D or 2D. It's fine as long as the total size is
@@ -505,7 +512,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
                     context->ResizeTensor(context, fw_output, fw_output_size));
 
   // The weights are of consistent type, so it suffices to check one.
-  const bool is_hybrid_op = (fw_input_to_output_weights->type == kTfLiteUInt8);
+  const bool is_hybrid_op = IsHybridOp(input, fw_input_to_output_weights);
 
   TfLiteIntArrayFree(node->temporaries);
   if (is_hybrid_op) {
@@ -549,8 +556,10 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   // Get the pointer to activation_state and cell_state buffer tensors.
   TfLiteTensor* bw_activation_state =
       GetVariableInput(context, node, kBwInputActivationStateTensor);
+  TF_LITE_ENSURE(context, bw_activation_state != nullptr);
   TfLiteTensor* bw_cell_state =
       GetVariableInput(context, node, kBwInputCellStateTensor);
+  TF_LITE_ENSURE(context, bw_cell_state != nullptr);
 
   // Resize the output tensors.
   if (!params->merge_outputs) {
@@ -603,7 +612,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
         *scratch_tensor_index + kInputQuantized;
     TfLiteTensor* input_quantized =
         GetTemporary(context, node, kInputQuantized);
-    input_quantized->type = kTfLiteUInt8;
+    input_quantized->type = fw_input_to_output_weights->type;
     input_quantized->allocation_type = kTfLiteArenaRw;
     if (!TfLiteIntArrayEqual(input_quantized->dims, input->dims)) {
       TfLiteIntArray* input_quantized_size = TfLiteIntArrayCopy(input->dims);
@@ -615,7 +624,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
         *scratch_tensor_index + kFwActivationStateQuantized;
     TfLiteTensor* fw_activation_state_quantized =
         GetTemporary(context, node, kFwActivationStateQuantized);
-    fw_activation_state_quantized->type = kTfLiteUInt8;
+    fw_activation_state_quantized->type = fw_input_to_output_weights->type;
     fw_activation_state_quantized->allocation_type = kTfLiteArenaRw;
     if (!TfLiteIntArrayEqual(fw_activation_state_quantized->dims,
                              fw_activation_state->dims)) {
@@ -629,7 +638,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
         *scratch_tensor_index + kBwActivationStateQuantized;
     TfLiteTensor* bw_activation_state_quantized =
         GetTemporary(context, node, kBwActivationStateQuantized);
-    bw_activation_state_quantized->type = kTfLiteUInt8;
+    bw_activation_state_quantized->type = fw_input_to_output_weights->type;
     bw_activation_state_quantized->allocation_type = kTfLiteArenaRw;
     if (!TfLiteIntArrayEqual(bw_activation_state_quantized->dims,
                              bw_activation_state->dims)) {
@@ -643,7 +652,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
         *scratch_tensor_index + kFwCellStateQuantized;
     TfLiteTensor* fw_cell_state_quantized =
         GetTemporary(context, node, kFwCellStateQuantized);
-    fw_cell_state_quantized->type = kTfLiteUInt8;
+    fw_cell_state_quantized->type = fw_input_to_output_weights->type;
     fw_cell_state_quantized->allocation_type = kTfLiteArenaRw;
     if (!TfLiteIntArrayEqual(fw_cell_state_quantized->dims,
                              fw_cell_state->dims)) {
@@ -657,7 +666,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
         *scratch_tensor_index + kBwCellStateQuantized;
     TfLiteTensor* bw_cell_state_quantized =
         GetTemporary(context, node, kBwCellStateQuantized);
-    bw_cell_state_quantized->type = kTfLiteUInt8;
+    bw_cell_state_quantized->type = fw_input_to_output_weights->type;
     bw_cell_state_quantized->allocation_type = kTfLiteArenaRw;
     if (!TfLiteIntArrayEqual(bw_cell_state_quantized->dims,
                              bw_cell_state->dims)) {
@@ -719,6 +728,28 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
                                               recovered_cell_weights_size));
     }
 
+    // Allocate a temporary tensor to store the accumulated int32 values.
+    node->temporaries->data[kAccumScratchBuffer] =
+        *scratch_tensor_index + kAccumScratchBuffer;
+    TfLiteTensor* accum_scratch =
+        GetTemporary(context, node, kAccumScratchBuffer);
+    accum_scratch->type = kTfLiteInt32;
+    accum_scratch->allocation_type = kTfLiteArenaRw;
+    int n_cell = std::max(n_fw_cell, n_bw_cell);
+    if (has_aux_input) {
+      n_cell = std::max(n_cell, fw_aux_input_to_output_weights->dims->data[0]);
+      n_cell = std::max(n_cell, bw_aux_input_to_output_weights->dims->data[0]);
+    }
+    int accum_scratch_dims[2] = {n_cell, n_batch};
+    if (!TfLiteIntArrayEqualsArray(accum_scratch->dims, 2,
+                                   accum_scratch_dims)) {
+      TfLiteIntArray* accum_size = TfLiteIntArrayCreate(2);
+      accum_size->data[0] = n_cell;
+      accum_size->data[1] = n_batch;
+      TF_LITE_ENSURE_OK(
+          context, context->ResizeTensor(context, accum_scratch, accum_size));
+    }
+
     // Only allocate a temporary tensor for quantized auxiliary input if we are
     // actually going to use it.
     if (has_aux_input) {
@@ -726,7 +757,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
           *scratch_tensor_index + kAuxInputQuantized;
       TfLiteTensor* aux_input_quantized =
           GetTemporary(context, node, kAuxInputQuantized);
-      aux_input_quantized->type = kTfLiteUInt8;
+      aux_input_quantized->type = fw_input_to_output_weights->type;
       aux_input_quantized->allocation_type = kTfLiteArenaRw;
       if (!TfLiteIntArrayEqual(aux_input_quantized->dims, aux_input->dims)) {
         TfLiteIntArray* aux_input_quantized_size =
@@ -790,8 +821,10 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
 
   TfLiteTensor* fw_activation_state =
       GetVariableInput(context, node, kFwInputActivationStateTensor);
+  TF_LITE_ENSURE(context, fw_activation_state != nullptr);
   TfLiteTensor* fw_cell_state =
       GetVariableInput(context, node, kFwInputCellStateTensor);
+  TF_LITE_ENSURE(context, fw_cell_state != nullptr);
   TfLiteTensor* fw_output = GetOutput(context, node, kFwOutputTensor);
 
   // Tensors for the backward cell.
@@ -837,8 +870,10 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   // State tensors.
   TfLiteTensor* bw_activation_state =
       GetVariableInput(context, node, kBwInputActivationStateTensor);
+  TF_LITE_ENSURE(context, bw_activation_state != nullptr);
   TfLiteTensor* bw_cell_state =
       GetVariableInput(context, node, kBwInputCellStateTensor);
+  TF_LITE_ENSURE(context, bw_cell_state != nullptr);
   TfLiteTensor* bw_output = params->merge_outputs
                                 ? nullptr
                                 : GetOutput(context, node, kBwOutputTensor);
@@ -869,6 +904,9 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   const TfLiteTensor* bw_aux_input_to_output_weights =
       GetOptionalInputTensor(context, node, kBwAuxInputToOutputWeightsTensor);
 
+  const bool has_previous_bw_output = (aux_input != nullptr);
+  const bool use_aux_input = (fw_aux_input_to_forget_weights != nullptr);
+
   // Populate a TfLiteLSTMParams struct for the evaluation functions.
   TfLiteLSTMParams lstm_params = {params->activation, params->cell_clip,
                                   params->proj_clip, kTfLiteLSTMFullKernel};
@@ -878,6 +916,26 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   const auto actual_bw_output = params->merge_outputs ? fw_output : bw_output;
 
   const bool time_major = params->time_major;
+
+  // We want to cover the following cases:
+  //
+  // If not stacking (not connected after other bidi lstms):
+  //   both fw & bw will just use `input`; aux_input will be null.
+  //
+  // If stacking with cross_links, TensorFlow equivalent
+  // (tf.contrib.rnn.stack_bidirectional_rnn):
+  //   both fw & bw will use `input`, but aux_input will be none null.
+  //   Note, this time, whether connected after other bidi lstms both works.
+  //
+  // If stacking without cross_links, but connected after other bidi lstms,
+  // TensorFlow equivalent (tf.nn.static_bidirectional_rnn):
+  //   fw will use `input`, bw will use aux_input, and the `real aux_input`
+  //   will be null.
+
+  const bool non_stacking_mode = !use_aux_input && has_previous_bw_output;
+  const TfLiteTensor* bw_input = non_stacking_mode ? aux_input : input;
+  const TfLiteTensor* real_aux_input = non_stacking_mode ? nullptr : aux_input;
+
   switch (fw_input_to_output_weights->type) {
     case kTfLiteFloat32: {
       TfLiteStatus fw_pass_status = lstm_eval::EvalFloat(
@@ -886,33 +944,44 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           fw_recurrent_to_input_weights, fw_recurrent_to_forget_weights,
           fw_recurrent_to_cell_weights, fw_recurrent_to_output_weights,
           fw_cell_to_input_weights, fw_cell_to_forget_weights,
-          fw_cell_to_output_weights, aux_input, fw_aux_input_to_input_weights,
-          fw_aux_input_to_forget_weights, fw_aux_input_to_cell_weights,
-          fw_aux_input_to_output_weights, fw_input_gate_bias,
-          fw_forget_gate_bias, fw_cell_bias, fw_output_gate_bias,
-          fw_projection_weights, fw_projection_bias, &lstm_params,
+          fw_cell_to_output_weights,
+          /*input_layer_norm_coefficients=*/nullptr,
+          /*forget_layer_norm_coefficients=*/nullptr,
+          /*cell_layer_norm_coefficients=*/nullptr,
+          /*output_layer_norm_coefficients=*/nullptr, real_aux_input,
+          fw_aux_input_to_input_weights, fw_aux_input_to_forget_weights,
+          fw_aux_input_to_cell_weights, fw_aux_input_to_output_weights,
+          fw_input_gate_bias, fw_forget_gate_bias, fw_cell_bias,
+          fw_output_gate_bias, fw_projection_weights, fw_projection_bias,
+          &lstm_params,
           /*forward_sequence=*/true, time_major, /*output_offset=*/0,
           fw_scratch_buffer, fw_activation_state, fw_cell_state, fw_output);
       TF_LITE_ENSURE_OK(context, fw_pass_status);
 
       TfLiteStatus bw_pass_status = lstm_eval::EvalFloat(
-          input, bw_input_to_input_weights, bw_input_to_forget_weights,
+          bw_input, bw_input_to_input_weights, bw_input_to_forget_weights,
           bw_input_to_cell_weights, bw_input_to_output_weights,
           bw_recurrent_to_input_weights, bw_recurrent_to_forget_weights,
           bw_recurrent_to_cell_weights, bw_recurrent_to_output_weights,
           bw_cell_to_input_weights, bw_cell_to_forget_weights,
-          bw_cell_to_output_weights, aux_input, bw_aux_input_to_input_weights,
-          bw_aux_input_to_forget_weights, bw_aux_input_to_cell_weights,
-          bw_aux_input_to_output_weights, bw_input_gate_bias,
-          bw_forget_gate_bias, bw_cell_bias, bw_output_gate_bias,
-          bw_projection_weights, bw_projection_bias, &lstm_params,
+          bw_cell_to_output_weights,
+          /*input_layer_norm_coefficients=*/nullptr,
+          /*forget_layer_norm_coefficients=*/nullptr,
+          /*cell_layer_norm_coefficients=*/nullptr,
+          /*output_layer_norm_coefficients=*/nullptr, real_aux_input,
+          bw_aux_input_to_input_weights, bw_aux_input_to_forget_weights,
+          bw_aux_input_to_cell_weights, bw_aux_input_to_output_weights,
+          bw_input_gate_bias, bw_forget_gate_bias, bw_cell_bias,
+          bw_output_gate_bias, bw_projection_weights, bw_projection_bias,
+          &lstm_params,
           /*forward_sequence=*/false, time_major, bw_output_offset,
           bw_scratch_buffer, bw_activation_state, bw_cell_state,
           actual_bw_output);
       TF_LITE_ENSURE_OK(context, bw_pass_status);
       return kTfLiteOk;
     }
-    case kTfLiteUInt8: {
+    case kTfLiteUInt8:
+    case kTfLiteInt8: {
       TfLiteTensor* input_quantized =
           GetTemporary(context, node, kInputQuantized);
       TfLiteTensor* fw_activation_state_quantized =
@@ -930,9 +999,10 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
       TfLiteTensor* recovered_cell_weights =
           GetTemporary(context, node, kRecoveredCellWeights);
       TfLiteTensor* aux_input_quantized =
-          (aux_input == nullptr)
-              ? nullptr
-              : GetTemporary(context, node, kAuxInputQuantized);
+          use_aux_input ? GetTemporary(context, node, kAuxInputQuantized)
+                        : nullptr;
+      TfLiteTensor* accum_scratch =
+          GetTemporary(context, node, kAccumScratchBuffer);
 
       TfLiteStatus fw_pass_status = lstm_eval::EvalHybrid(
           input, fw_input_to_input_weights, fw_input_to_forget_weights,
@@ -940,34 +1010,46 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
           fw_recurrent_to_input_weights, fw_recurrent_to_forget_weights,
           fw_recurrent_to_cell_weights, fw_recurrent_to_output_weights,
           fw_cell_to_input_weights, fw_cell_to_forget_weights,
-          fw_cell_to_output_weights, aux_input, fw_aux_input_to_input_weights,
-          fw_aux_input_to_forget_weights, fw_aux_input_to_cell_weights,
-          fw_aux_input_to_output_weights, fw_input_gate_bias,
-          fw_forget_gate_bias, fw_cell_bias, fw_output_gate_bias,
-          fw_projection_weights, fw_projection_bias, &lstm_params,
+          fw_cell_to_output_weights,
+          /*input_layer_norm_coefficients=*/nullptr,
+          /*forget_layer_norm_coefficients=*/nullptr,
+          /*cell_layer_norm_coefficients=*/nullptr,
+          /*output_layer_norm_coefficients=*/nullptr, real_aux_input,
+          fw_aux_input_to_input_weights, fw_aux_input_to_forget_weights,
+          fw_aux_input_to_cell_weights, fw_aux_input_to_output_weights,
+          fw_input_gate_bias, fw_forget_gate_bias, fw_cell_bias,
+          fw_output_gate_bias, fw_projection_weights, fw_projection_bias,
+          &lstm_params,
           /*forward_sequence=*/true, /*time_major=*/true, /*output_offset=*/0,
           fw_scratch_buffer, scaling_factors, prod_scaling_factors,
           recovered_cell_weights, input_quantized, aux_input_quantized,
           fw_activation_state_quantized, fw_cell_state_quantized,
-          fw_activation_state, fw_cell_state, fw_output);
+          fw_activation_state, fw_cell_state, accum_scratch, fw_output,
+          CpuBackendContext::GetFromContext(context));
       TF_LITE_ENSURE_OK(context, fw_pass_status);
 
       TfLiteStatus bw_pass_status = lstm_eval::EvalHybrid(
-          input, bw_input_to_input_weights, bw_input_to_forget_weights,
+          bw_input, bw_input_to_input_weights, bw_input_to_forget_weights,
           bw_input_to_cell_weights, bw_input_to_output_weights,
           bw_recurrent_to_input_weights, bw_recurrent_to_forget_weights,
           bw_recurrent_to_cell_weights, bw_recurrent_to_output_weights,
           bw_cell_to_input_weights, bw_cell_to_forget_weights,
-          bw_cell_to_output_weights, aux_input, bw_aux_input_to_input_weights,
-          bw_aux_input_to_forget_weights, bw_aux_input_to_cell_weights,
-          bw_aux_input_to_output_weights, bw_input_gate_bias,
-          bw_forget_gate_bias, bw_cell_bias, bw_output_gate_bias,
-          bw_projection_weights, bw_projection_bias, &lstm_params,
+          bw_cell_to_output_weights,
+          /*input_layer_norm_coefficients=*/nullptr,
+          /*forget_layer_norm_coefficients=*/nullptr,
+          /*cell_layer_norm_coefficients=*/nullptr,
+          /*output_layer_norm_coefficients=*/nullptr, real_aux_input,
+          bw_aux_input_to_input_weights, bw_aux_input_to_forget_weights,
+          bw_aux_input_to_cell_weights, bw_aux_input_to_output_weights,
+          bw_input_gate_bias, bw_forget_gate_bias, bw_cell_bias,
+          bw_output_gate_bias, bw_projection_weights, bw_projection_bias,
+          &lstm_params,
           /*forward_sequence=*/false, /*time_major=*/true, bw_output_offset,
           bw_scratch_buffer, scaling_factors, prod_scaling_factors,
           recovered_cell_weights, input_quantized, aux_input_quantized,
           bw_activation_state_quantized, bw_cell_state_quantized,
-          bw_activation_state, bw_cell_state, actual_bw_output);
+          bw_activation_state, bw_cell_state, accum_scratch, actual_bw_output,
+          CpuBackendContext::GetFromContext(context));
       TF_LITE_ENSURE_OK(context, bw_pass_status);
       return kTfLiteOk;
     }

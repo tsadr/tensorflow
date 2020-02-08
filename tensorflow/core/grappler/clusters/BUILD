@@ -1,11 +1,13 @@
-licenses(["notice"])  # Apache 2.0
-
-load("//tensorflow:tensorflow.bzl", "if_cuda")
+load("@local_config_cuda//cuda:build_defs.bzl", "if_cuda")
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
 load("//tensorflow:tensorflow.bzl", "tf_cuda_library")
 load(
-    "//tensorflow/core:platform/default/build_config_root.bzl",
+    "//tensorflow/core/platform:build_config_root.bzl",
     "tf_cuda_tests_tags",
+)
+
+package(
+    licenses = ["notice"],  # Apache 2.0
 )
 
 config_setting(
@@ -51,6 +53,19 @@ tf_cc_test(
     ],
 )
 
+filegroup(
+    name = "pywrap_required_hdrs",
+    srcs = [
+        "cluster.h",
+        "single_machine.h",
+        "utils.h",
+        "virtual_cluster.h",
+    ],
+    visibility = [
+        "//tensorflow/python:__pkg__",
+    ],
+)
+
 cc_library(
     name = "cluster",
     srcs = ["cluster.cc"],
@@ -59,7 +74,7 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        "//tensorflow/core:core_cpu_base",
+        "//tensorflow/core:core_cpu_lib",
         "//tensorflow/core:framework",
         "//tensorflow/core:lib",
         "//tensorflow/core:protos_all_cc",
@@ -81,6 +96,7 @@ cc_library(
         "//tensorflow/core:core_cpu_base",
         "//tensorflow/core:framework",
         "//tensorflow/core:protos_all_cc",
+        "//tensorflow/core/grappler/costs:analytical_cost_estimator",
         "//tensorflow/core/grappler/costs:op_level_cost_estimator",
         "//tensorflow/core/grappler/costs:virtual_scheduler",
     ],

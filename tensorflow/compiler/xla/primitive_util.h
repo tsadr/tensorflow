@@ -29,6 +29,10 @@ limitations under the License.
 namespace xla {
 namespace primitive_util {
 
+// Returns the count of significand (mantissa) bits for float datatypes.
+// For non-float datatypes, results in a LOG(FATAL).
+int SignificandWidth(PrimitiveType type);
+
 // The number of exponent bits in a BF16 value.
 const int kBFloat16ExponentBits = 8;
 
@@ -41,7 +45,7 @@ const int kBFloat16MantissaBits = 7;
 template <typename NativeT>
 PrimitiveType NativeToPrimitiveType() {
   // Make the expression depend on the template parameter NativeT so
-  // that this compile-time error only apperas if this function is
+  // that this compile-time error only appears if this function is
   // instantiated with some concrete type that is not specialized
   // below.
   static_assert(!std::is_same<NativeT, NativeT>::value,
@@ -126,6 +130,11 @@ inline PrimitiveType NativeToPrimitiveType<complex64>() {
   return C64;
 }
 
+template <>
+inline PrimitiveType NativeToPrimitiveType<complex128>() {
+  return C128;
+}
+
 bool IsFloatingPointType(PrimitiveType type);
 
 bool IsComplexType(PrimitiveType type);
@@ -141,6 +150,8 @@ bool IsArrayType(PrimitiveType primitive_type);
 
 // Returns the number of bits in the representation for a given type.
 int BitWidth(PrimitiveType type);
+
+PrimitiveType UnsignedIntegralTypeForBitWidth(int64 src_bitwidth);
 
 // Returns the real, imag component type underlying the given complex type.
 // LOG(FATAL)'s if complex_type is not complex.
@@ -223,6 +234,11 @@ struct PrimitiveTypeToNative<BF16> {
 template <>
 struct PrimitiveTypeToNative<C64> {
   using type = complex64;
+};
+
+template <>
+struct PrimitiveTypeToNative<C128> {
+  using type = complex128;
 };
 
 // Returns the lower-case name of the given primitive type.

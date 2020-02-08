@@ -14,8 +14,10 @@ limitations under the License.
 ==============================================================================*/
 
 #include <jni.h>
+
 #include <algorithm>
-#include "tensorflow/lite/c/c_api_internal.h"
+
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
 #ifdef __cplusplus
@@ -49,8 +51,6 @@ Java_org_tensorflow_lite_InterpreterTest_getNativeHandleForDelegate(
       .custom_name = "",
       .version = 1,
   };
-  // A simple delegate which replaces all ops with a single op that outputs a
-  // vector of length 1 with the value [7].
   static TfLiteDelegate delegate = {
       .data_ = nullptr,
       .Prepare = [](TfLiteContext* context,
@@ -60,6 +60,11 @@ Java_org_tensorflow_lite_InterpreterTest_getNativeHandleForDelegate(
             context->GetExecutionPlan(context, &execution_plan));
         context->ReplaceNodeSubsetsWithDelegateKernels(
             context, registration, execution_plan, delegate);
+        // Now bind delegate buffer handles for all tensors.
+        for (size_t i = 0; i < context->tensors_size; ++i) {
+          context->tensors[i].delegate = delegate;
+          context->tensors[i].buffer_handle = static_cast<int>(i);
+        }
         return kTfLiteOk;
       },
       .CopyFromBufferHandle = nullptr,

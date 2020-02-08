@@ -18,6 +18,9 @@ from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
 
+import contextlib
+
+from absl.testing import parameterized
 import numpy as np
 
 from tensorflow.python import keras
@@ -28,13 +31,49 @@ from tensorflow.python.keras import keras_parameterized
 from tensorflow.python.keras import metrics as metrics_module
 from tensorflow.python.keras import testing_utils
 from tensorflow.python.keras.optimizer_v2 import rmsprop
+from tensorflow.python.ops import array_ops
 from tensorflow.python.platform import test
 
 
 class TrainingTest(keras_parameterized.TestCase):
 
+  @keras_parameterized.run_all_keras_modes(always_skip_v1=True)
+  def test_dynamic_model_has_trainable_weights(self):
+    if not context.executing_eagerly():
+      # Only test Eager modes, as Graph mode is not relevant for dynamic models.
+      return
+
+    class DynamicModel(keras.Model):
+
+      def __init__(self):
+        super(DynamicModel, self).__init__(dynamic=True)
+        self.dense = keras.layers.Dense(
+            1, kernel_initializer='zeros', bias_initializer='ones')
+
+      def call(self, inputs):
+        return self.dense(inputs)
+
+    model = DynamicModel()
+    model.compile(
+        'rmsprop', 'mae',
+        run_eagerly=True,
+        experimental_run_tf_function=testing_utils.should_run_tf_function())
+    hist = model.fit(np.zeros((1, 1)), np.zeros((1, 1)))
+    self.assertEqual(hist.history['loss'][-1], 1)
+    self.assertEqual(len(model.trainable_weights), 2)
+    loss = model.train_on_batch(np.zeros((1, 1)), np.zeros((1, 1)))
+    # The loss must have been updated if the trainable weights are taken into
+    # account during tracking.
+    self.assertLess(loss, 1)
+
   @keras_parameterized.run_with_all_model_types(exclude_models='sequential')
+  @keras_parameterized.run_all_keras_modes
   def test_model_methods_with_eager_tensors_multi_io(self):
+    if not context.executing_eagerly():
+      # Only test V2 Function and V2 Eager modes, as V1 Graph mode with
+      # symbolic tensors has different requirements.
+      return
+
     input_a = keras.layers.Input(shape=(3,), name='input_a')
     input_b = keras.layers.Input(shape=(3,), name='input_b')
 
@@ -53,13 +92,14 @@ class TrainingTest(keras_parameterized.TestCase):
         loss,
         metrics=metrics,
         loss_weights=loss_weights,
-        run_eagerly=True,
+        run_eagerly=testing_utils.should_run_eagerly(),
+        experimental_run_tf_function=testing_utils.should_run_tf_function(),
         sample_weight_mode=None)
 
-    input_a = keras.backend.zeros(shape=(10, 3))
-    input_b = keras.backend.zeros(shape=(10, 3))
-    target_a = keras.backend.zeros(shape=(10, 4))
-    target_b = keras.backend.zeros(shape=(10, 4))
+    input_a = array_ops.zeros(shape=(10, 3))
+    input_b = array_ops.zeros(shape=(10, 3))
+    target_a = array_ops.zeros(shape=(10, 4))
+    target_b = array_ops.zeros(shape=(10, 4))
 
     model.fit(
         [input_a, input_b], [target_a, target_b],
@@ -107,16 +147,27 @@ class TrainingTest(keras_parameterized.TestCase):
     model.test_on_batch([input_a, input_b], [target_a, target_b])
 
   @keras_parameterized.run_with_all_model_types
+  @keras_parameterized.run_all_keras_modes
   def test_model_methods_with_eager_tensors_single_io(self):
+    if not context.executing_eagerly():
+      # Only test V2 Function and V2 Eager modes, as V1 Graph mode with
+      # symbolic tensors has different requirements.
+      return
+
     model = testing_utils.get_small_mlp(10, 4, 3)
 
     optimizer = rmsprop.RMSprop(learning_rate=0.001)
     loss = 'mse'
     metrics = ['mae', metrics_module.CategoricalAccuracy()]
-    model.compile(optimizer, loss, metrics=metrics, run_eagerly=True)
+    model.compile(
+        optimizer,
+        loss,
+        metrics=metrics,
+        run_eagerly=testing_utils.should_run_eagerly(),
+        experimental_run_tf_function=testing_utils.should_run_tf_function())
 
-    inputs = keras.backend.zeros(shape=(10, 3))
-    targets = keras.backend.zeros(shape=(10, 4))
+    inputs = array_ops.zeros(shape=(10, 3))
+    targets = array_ops.zeros(shape=(10, 4))
 
     model.fit(inputs, targets, epochs=1, batch_size=2, verbose=0)
     model.fit(inputs, targets, epochs=1, batch_size=3, verbose=0, shuffle=False)
@@ -134,32 +185,23 @@ class TrainingTest(keras_parameterized.TestCase):
                   loss='mse',
                   run_eagerly=True)
 
-    x = keras.backend.zeros(shape=(10, 3))
-    y = keras.backend.zeros(shape=(10, 4))
+    x = array_ops.zeros(shape=(10, 3))
+    y = array_ops.zeros(shape=(10, 4))
     dataset = dataset_ops.Dataset.from_tensor_slices((x, y)).repeat(10).batch(5)
-    iterator = dataset_ops.make_one_shot_iterator(dataset)
     validation_dataset = dataset_ops.Dataset.from_tensor_slices(
-        (x, y)).repeat(10).batch(5)
-    validation_iterator = dataset_ops.make_one_shot_iterator(validation_dataset)
+        (x, y)).repeat().batch(5)  # Infinite dataset.
 
-    with self.assertRaisesRegexp(
-        ValueError, r'specify .* `steps_per_epoch`'):
-      model.fit(iterator, epochs=1, verbose=0)
-    if not context.executing_eagerly():
-      # In eager execution, `keras.backend.zeros` returns value tensors
-      # which can be used for validation without a `validation_steps` argument.
-      with self.assertRaisesRegexp(
-          ValueError, r'provide either `batch_size` or `validation_steps`'):
-        model.fit(iterator, steps_per_epoch=2, epochs=1, verbose=0,
-                  validation_data=(x, y))
+    model.fit(dataset, epochs=1, verbose=0)
+
+    # Step argument is required for infinite datasets.
     with self.assertRaisesRegexp(ValueError,
                                  'specify the `validation_steps` argument.'):
-      model.fit(iterator, steps_per_epoch=2, epochs=1, verbose=0,
+      model.fit(dataset, steps_per_epoch=2, epochs=1, verbose=0,
                 validation_data=validation_dataset)
     with self.assertRaisesRegexp(ValueError,
                                  'specify the `validation_steps` argument.'):
-      model.fit(iterator, steps_per_epoch=2, epochs=1, verbose=0,
-                validation_data=validation_iterator)
+      model.fit(dataset, steps_per_epoch=2, epochs=1, verbose=0,
+                validation_data=validation_dataset)
 
   # TODO(b/120931266): Enable test on subclassed models after bug causing an
   # extra dimension to be added to predict outputs is fixed.
@@ -203,9 +245,11 @@ class CorrectnessTest(keras_parameterized.TestCase):
                            kernel_initializer='ones'),
         keras.layers.Dense(2, activation='softmax', kernel_initializer='ones')]
     model = testing_utils.get_model_from_layers(layers, input_shape=(4,))
-    model.compile(loss='sparse_categorical_crossentropy',
-                  optimizer=rmsprop.RMSprop(learning_rate=0.001),
-                  run_eagerly=testing_utils.should_run_eagerly())
+    model.compile(
+        loss='sparse_categorical_crossentropy',
+        optimizer=rmsprop.RMSprop(learning_rate=0.001),
+        run_eagerly=testing_utils.should_run_eagerly(),
+        experimental_run_tf_function=testing_utils.should_run_tf_function())
     x = np.ones((100, 4))
     np.random.seed(123)
     y = np.random.randint(0, 1, size=(100, 1))
@@ -225,28 +269,72 @@ class CorrectnessTest(keras_parameterized.TestCase):
     model.compile(
         loss='sparse_categorical_crossentropy',
         optimizer=rmsprop.RMSprop(learning_rate=0.001),
-        run_eagerly=testing_utils.should_run_eagerly())
+        run_eagerly=testing_utils.should_run_eagerly(),
+        experimental_run_tf_function=testing_utils.should_run_tf_function())
     x = np.ones((100, 4), dtype=np.float32)
     np.random.seed(123)
     y = np.random.randint(0, 1, size=(100, 1))
     dataset = dataset_ops.Dataset.from_tensor_slices((x, y))
     dataset = dataset.repeat(100)
     dataset = dataset.batch(10)
-    iterator = dataset_ops.make_one_shot_iterator(dataset)
-    history = model.fit(iterator, epochs=1, steps_per_epoch=10)
+    history = model.fit(dataset, epochs=1, steps_per_epoch=10)
     self.assertAlmostEqual(history.history['loss'][-1], 0.5836, 4)
 
-  def test_loss_in_call(self):
+  @parameterized.named_parameters([
+      ('_None', contextlib.contextmanager(lambda: iter([None])), 0., 4.),
+      ('_0', lambda: keras.backend.learning_phase_scope(0), 4., 4.),
+      ('_1', lambda: keras.backend.learning_phase_scope(1), 0., 0.),
+  ])
+  def test_nested_model_learning_phase(self, nested_scope_fn,
+                                       expected_training_loss,
+                                       expected_validation_loss):
+    """Tests that learning phase is correctly set in an intermediate layer."""
 
-    class HasLoss(keras.layers.Layer):
+    def _make_unregularized_model():
+      inputs = keras.Input((4,))
+      # Zero out activations when `training=True`.
+      x = keras.layers.Dropout(1. - 1. / (1 << 24))(inputs)
+      x = keras.layers.Dense(
+          10,
+          activation='relu',
+          trainable=False,
+          bias_initializer='zeros',
+          kernel_initializer='ones')(
+              x)  # Just sum together all the activations.
+      outputs = keras.layers.Dense(3)(x)
+      return keras.Model(inputs, outputs)
 
-      def call(self, x):
-        self.add_loss(x)
-        return x
+    def _regularize_model(unregularized_model):
+      inputs = keras.Input(unregularized_model.inputs[0].shape[1:])
+      with nested_scope_fn():
+        logits = unregularized_model(inputs)
+      outputs = keras.activations.softmax(logits)
+      model = keras.Model(inputs, outputs)
+      # Regularize the most recent activations of a post-dropout layer.
+      sample_activations = unregularized_model.get_layer(
+          index=-2).get_output_at(-1)
+      regularization_loss = keras.backend.mean(sample_activations)
+      model.add_loss(regularization_loss)
+      model.add_metric(
+          regularization_loss, aggregation='mean', name='regularization_loss')
+      return model
 
-    layer = HasLoss()
-    layer(1.)  # Plain-value inputs are only valid in eager mode.
-    self.assertEqual(1, len(layer.losses))
+    # Make and compile models.
+    model = _regularize_model(_make_unregularized_model())
+    model.compile('sgd', 'sparse_categorical_crossentropy')
+    # Prepare fake data.
+    x = np.ones((20, 4)).astype(np.float32)
+    y = np.random.randint(0, 3, size=(20,)).astype(np.int64)
+    dataset = dataset_ops.Dataset.from_tensor_slices((x, y)).batch(2)
+    evaluation_results = dict(zip(model.metrics_names, model.evaluate(dataset)))
+    # Rate of dropout depends on the learning phase.
+    self.assertEqual(evaluation_results['regularization_loss'],
+                     expected_validation_loss)
+    history = model.fit(dataset, epochs=2, validation_data=dataset).history
+    self.assertAllEqual(history['regularization_loss'],
+                        [expected_training_loss] * 2)
+    self.assertAllEqual(history['val_regularization_loss'],
+                        [expected_validation_loss] * 2)
 
 
 if __name__ == '__main__':

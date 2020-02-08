@@ -17,10 +17,10 @@ limitations under the License.
 #include <string>
 #include <vector>
 
+#include "tensorflow/core/platform/logging.h"
 #include "tensorflow/lite/toco/graph_transformations/graph_transformations.h"
 #include "tensorflow/lite/toco/model.h"
 #include "tensorflow/lite/toco/tooling_util.h"
-#include "tensorflow/core/platform/logging.h"
 
 namespace toco {
 
@@ -390,6 +390,37 @@ bool HardcodeMinMaxForLstmCell(Model* model, Operator* op) {
 
   return changed;
 }
+
+bool HardcodeMinMaxForPack(Model* model, Operator* op) {
+  auto& output_array = model->GetArray(op->outputs[0]);
+  if (output_array.minmax) {
+    return false;
+  }
+
+  // If all tensors being packed have the same min/max range, hardcode min/max
+  // for the output.
+  const auto& first_input_array = model->GetArray(op->inputs[0]);
+  if (!first_input_array.minmax) {
+    return false;
+  }
+  const auto& first_input_minmax = first_input_array.GetMinMax();
+
+  for (int i = 1; i < op->inputs.size(); i++) {
+    const auto& input_array = model->GetArray(op->inputs[i]);
+    if (!input_array.minmax) {
+      return false;
+    }
+    if (first_input_minmax != input_array.GetMinMax()) {
+      return false;
+    }
+  }
+
+  auto& output_minmax = output_array.GetOrCreateMinMax();
+  output_minmax.min = first_input_minmax.min;
+  output_minmax.max = first_input_minmax.max;
+  return true;
+}
+
 }  // namespace
 
 ::tensorflow::Status HardcodeMinMax::Run(Model* model, std::size_t op_index,
@@ -440,7 +471,12 @@ bool HardcodeMinMaxForLstmCell(Model* model, Operator* op) {
     case OperatorType::kGather:
     case OperatorType::kTranspose:
     case OperatorType::kMean:
+    case OperatorType::kReduceMax:
+    case OperatorType::kReduceMin:
       changed = HardcodeMinMaxFromFirstInput(model, op);
+      break;
+    case OperatorType::kPack:
+      changed = HardcodeMinMaxForPack(model, op);
       break;
     case OperatorType::kSum:
       // reduce_sum is expected to change the output range. Hence
@@ -448,7 +484,7 @@ bool HardcodeMinMaxForLstmCell(Model* model, Operator* op) {
       // in special circumstances like when computing expected value using
       // reduce_sum the input range and the output range matches. Hence the
       // below code would act as a fallback. If a fake_quant node is observed in
-      // the output that takes precendence over the hard coding logic below.
+      // the output that takes precedence over the hard coding logic below.
       changed = HardcodeMinMaxFromFirstInput(model, op);
       if (changed) {
         LOG(WARNING) << "Using the input range for output in reduce_sum op."

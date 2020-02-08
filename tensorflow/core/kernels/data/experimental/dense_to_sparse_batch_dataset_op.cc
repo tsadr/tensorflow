@@ -19,10 +19,8 @@ limitations under the License.
 
 namespace tensorflow {
 namespace data {
+namespace experimental {
 namespace {
-
-// See documentation in ../../ops/dataset_ops.cc for a high-level
-// description of the following op.
 
 class DenseToSparseBatchDatasetOp : public UnaryDatasetOpKernel {
  public:
@@ -96,8 +94,8 @@ class DenseToSparseBatchDatasetOp : public UnaryDatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return std::unique_ptr<IteratorBase>(new Iterator(
-          {this, strings::StrCat(prefix, "::DenseToSparseBatch")}));
+      return absl::make_unique<Iterator>(typename Iterator::Params{
+          this, strings::StrCat(prefix, "::DenseToSparseBatch")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -120,6 +118,10 @@ class DenseToSparseBatchDatasetOp : public UnaryDatasetOpKernel {
         return n;
       }
       return n / batch_size_ + (n % batch_size_ == 0 ? 0 : 1);
+    }
+
+    Status CheckExternalState() const override {
+      return input_->CheckExternalState();
     }
 
    protected:
@@ -150,7 +152,7 @@ class DenseToSparseBatchDatasetOp : public UnaryDatasetOpKernel {
 
       Status Initialize(IteratorContext* ctx) override {
         return DatasetIterator<Dataset<T>>::dataset()->input_->MakeIterator(
-            ctx, DatasetIterator<Dataset<T>>::prefix(), &input_impl_);
+            ctx, this, DatasetIterator<Dataset<T>>::prefix(), &input_impl_);
       }
 
       Status GetNextInternal(IteratorContext* ctx,
@@ -312,10 +314,13 @@ class DenseToSparseBatchDatasetOp : public UnaryDatasetOpKernel {
   };
 };
 
+REGISTER_KERNEL_BUILDER(Name("DenseToSparseBatchDataset").Device(DEVICE_CPU),
+                        DenseToSparseBatchDatasetOp);
 REGISTER_KERNEL_BUILDER(
     Name("ExperimentalDenseToSparseBatchDataset").Device(DEVICE_CPU),
     DenseToSparseBatchDatasetOp);
 
 }  // namespace
+}  // namespace experimental
 }  // namespace data
 }  // namespace tensorflow

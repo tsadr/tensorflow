@@ -13,9 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include <string.h>
+
 #include <vector>
+
 #include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
@@ -146,6 +148,13 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
         TF_LITE_BATCH_TO_SPACE_ND(reference_ops, uint8_t);
       } else {
         TF_LITE_BATCH_TO_SPACE_ND(optimized_ops, uint8_t);
+      }
+      break;
+    case kTfLiteInt8:
+      if (kernel_type == kReference) {
+        TF_LITE_BATCH_TO_SPACE_ND(reference_ops, int8_t);
+      } else {
+        TF_LITE_BATCH_TO_SPACE_ND(optimized_ops, int8_t);
       }
       break;
     case kTfLiteInt32:

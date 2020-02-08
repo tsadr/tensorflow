@@ -19,10 +19,8 @@ limitations under the License.
 
 namespace tensorflow {
 namespace data {
+namespace experimental {
 namespace {
-
-// See documentation in ../ops/dataset_ops.cc for a high-level
-// description of the following op.
 
 class DirectedInterleaveDatasetOp : public DatasetOpKernel {
  public:
@@ -93,8 +91,8 @@ class DirectedInterleaveDatasetOp : public DatasetOpKernel {
 
     std::unique_ptr<IteratorBase> MakeIteratorInternal(
         const string& prefix) const override {
-      return std::unique_ptr<IteratorBase>(new Iterator(
-          {this, strings::StrCat(prefix, "::DirectedInterleave")}));
+      return absl::make_unique<Iterator>(Iterator::Params{
+          this, strings::StrCat(prefix, "::DirectedInterleave")});
     }
 
     const DataTypeVector& output_dtypes() const override {
@@ -107,6 +105,13 @@ class DirectedInterleaveDatasetOp : public DatasetOpKernel {
 
     string DebugString() const override {
       return strings::StrCat("DirectedInterleaveDatasetOp::Dataset");
+    }
+
+    Status CheckExternalState() const override {
+      for (const auto& input : data_inputs_) {
+        TF_RETURN_IF_ERROR(input->CheckExternalState());
+      }
+      return selector_input_->CheckExternalState();
     }
 
    protected:
@@ -136,13 +141,12 @@ class DirectedInterleaveDatasetOp : public DatasetOpKernel {
       Status Initialize(IteratorContext* ctx) override {
         mutex_lock l(mu_);
         TF_RETURN_IF_ERROR(dataset()->selector_input_->MakeIterator(
-            ctx, strings::StrCat(prefix(), ".selector"),
-            &selector_input_impl_));
+            ctx, this, strings::StrCat(prefix()), &selector_input_impl_));
         data_input_impls_.resize(dataset()->data_inputs_.size());
         for (size_t i = 0; i < data_input_impls_.size(); ++i) {
           const DatasetBase* data_input = dataset()->data_inputs_[i];
           TF_RETURN_IF_ERROR(data_input->MakeIterator(
-              ctx, strings::StrCat(prefix(), "[", i, "]"),
+              ctx, this, strings::StrCat(prefix(), "[", i, "]"),
               &data_input_impls_[i]));
         }
         return Status::OK();
@@ -171,7 +175,8 @@ class DirectedInterleaveDatasetOp : public DatasetOpKernel {
           }
 
           int64 selected_input = selector_result[0].scalar<int64>()();
-          if (selected_input < 0 || selected_input > data_input_impls_.size()) {
+          if (selected_input < 0 ||
+              selected_input >= data_input_impls_.size()) {
             return errors::InvalidArgument(
                 "Selector index out of range: ", selected_input,
                 " >= ", data_input_impls_.size());
@@ -196,8 +201,8 @@ class DirectedInterleaveDatasetOp : public DatasetOpKernel {
             }
           }
 
-          LOG(WARNING) << "DirectedInterleave selected an exhausted input: "
-                       << selected_input;
+          VLOG(2) << "DirectedInterleave selected an exhausted input: "
+                  << selected_input;
         }
       }
 
@@ -277,10 +282,13 @@ class DirectedInterleaveDatasetOp : public DatasetOpKernel {
   };
 };
 
+REGISTER_KERNEL_BUILDER(Name("DirectedInterleaveDataset").Device(DEVICE_CPU),
+                        DirectedInterleaveDatasetOp);
 REGISTER_KERNEL_BUILDER(
     Name("ExperimentalDirectedInterleaveDataset").Device(DEVICE_CPU),
     DirectedInterleaveDatasetOp);
 
 }  // namespace
+}  // namespace experimental
 }  // namespace data
 }  // namespace tensorflow

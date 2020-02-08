@@ -83,6 +83,8 @@ def _proto_gen_impl(ctx):
     for dep in ctx.attr.deps:
         import_flags += dep.proto.import_flags
         deps += dep.proto.deps
+    import_flags = depset(import_flags).to_list()
+    deps = depset(deps).to_list()
 
     args = []
     if ctx.attr.gen_cc:
@@ -107,7 +109,7 @@ def _proto_gen_impl(ctx):
         inputs += [plugin]
 
     if args:
-        ctx.action(
+        ctx.actions.run(
             inputs = inputs,
             outputs = ctx.outputs.outs,
             arguments = args + import_flags + [s.path for s in srcs],
@@ -132,7 +134,7 @@ proto_gen = rule(
         "protoc": attr.label(
             cfg = "host",
             executable = True,
-            single_file = True,
+            allow_single_file = True,
             mandatory = True,
         ),
         "plugin": attr.label(
@@ -262,6 +264,7 @@ def cc_proto_library(
         hdrs = gen_hdrs,
         deps = cc_libs + deps,
         includes = includes,
+        alwayslink = 1,
         **kargs
     )
 
@@ -271,8 +274,8 @@ def internal_gen_well_known_protos_java(srcs):
     Args:
       srcs: the well known protos
     """
-    root = Label("%s//protobuf_java" % (REPOSITORY_NAME)).workspace_root
-    pkg = PACKAGE_NAME + "/" if PACKAGE_NAME else ""
+    root = Label("%s//protobuf_java" % (native.repository_name())).workspace_root
+    pkg = native.package_name() + "/" if native.package_name() else ""
     if root == "":
         include = " -I%ssrc " % pkg
     else:

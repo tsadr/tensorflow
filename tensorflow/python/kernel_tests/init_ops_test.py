@@ -537,6 +537,12 @@ class RangeTest(test.TestCase):
         math_ops.range(
             0, 0, 1, dtype=dtypes.float64).dtype, dtypes.float64)
 
+  def testMixedDType(self):
+    # Test case for GitHub issue 35710
+    tf_ans = math_ops.range(
+        constant_op.constant(4, dtype=dtypes.int32), dtype=dtypes.int64)
+    self.assertAllEqual(self.evaluate(tf_ans), np.array([0, 1, 2, 3]))
+
 
 # TODO(vrv): move to sequence_ops_test?
 class LinSpaceTest(test.TestCase):
@@ -591,6 +597,22 @@ class LinSpaceTest(test.TestCase):
       self.assertArrayNear(self._LinSpace(5., 5., 2), np.array([5.] * 2), 1e-5)
       self.assertArrayNear(self._LinSpace(5., 5., 3), np.array([5.] * 3), 1e-5)
       self.assertArrayNear(self._LinSpace(5., 5., 4), np.array([5.] * 4), 1e-5)
+
+  def testEndpointsAreExact(self):
+    for self.force_gpu in self._gpu_modes():
+      # Test some cases that produce last values not equal to "stop" when
+      # computed via start + (num - 1) * ((stop - start) / (num - 1)), since
+      # float arithmetic will introduce error through precision loss.
+      self.assertAllEqual(
+          self._LinSpace(0., 1., 42)[[0, -1]], np.array([0., 1.], np.float32))
+      self.assertAllEqual(
+          self._LinSpace(-1., 0., 42)[[0, -1]], np.array([-1., 0.], np.float32))
+      self.assertAllEqual(
+          self._LinSpace(.1, .2, 4)[[0, -1]], np.array([.1, .2], np.float32))
+      # Check a case for float64 error too.
+      self.assertAllEqual(
+          self._LinSpace(np.array(0., np.float64), .1, 12)[[0, -1]],
+          np.array([0., .1], np.float64))
 
 
 class DeviceTest(test.TestCase):
@@ -730,6 +752,13 @@ class ConvolutionDeltaOrthogonalInitializerTest(test.TestCase):
         else:
           shape = [4, 16, 16, 16, 64]
           convolution = convolutional.conv3d
+
+          if test.is_built_with_rocm():
+            # This subtest triggers a known bug in ROCm runtime code
+            # The bug has been fixed and will be available in ROCm 2.7
+            # Re-enable this test once ROCm 2.7 is released
+            continue
+
         inputs = random_ops.random_normal(shape, dtype=dtype)
         inputs_2norm = linalg_ops.norm(inputs)
         outputs = convolution(
